@@ -1,15 +1,17 @@
-import express from "express";
+import express, { response } from "express";
 import { v4 as uuidV4 } from "uuid";
 import { hash, compare } from "bcryptjs";
 import jwt from "jsonwebtoken";
-const users = [];
+import users from "./database.js";
 
 const app = express();
 app.use(express.json());
+
 // Middleware
+
 const verifyTokenLoginMiddleware = (request, response, next) => {
   const token = request.headers.authorization;
-  console.log(token);
+
   if (!token) {
     return response
       .status(401)
@@ -23,12 +25,11 @@ const verifyTokenLoginMiddleware = (request, response, next) => {
         .status(401)
         .json({ message: "Missing authorization headers" });
     }
-    const dataUser = {
+    request.user = {
       uuid: decoded.sub,
       email: decoded.email,
       isAdm: decoded.isAdm,
     };
-    request.user = dataUser;
   });
   next();
 };
@@ -39,6 +40,23 @@ const verifyIsAdmMiddleware = (request, response, next) => {
   }
   next();
 };
+
+const verifyIsAdmOrUserMiddleware = (request, response, next) => {
+  const isAdm = request.user.isAdm;
+  const idIsUser = request.user.uuid;
+  const { uuid } = request.params;
+
+  if (!isAdm) {
+    if (idIsUser !== uuid) {
+      return response.status(403).json({
+        message: "missing admin permissions",
+      });
+    }
+  }
+
+  return next();
+};
+
 const verifyUserMiddleware = (request, response, next) => {
   const { email } = request.body;
   const userAlrealdyExists = users.find((user) => user.email === email);
@@ -48,7 +66,9 @@ const verifyUserMiddleware = (request, response, next) => {
   }
   next();
 };
+
 // Services
+
 const createNewUserService = async ({ name, email, isAdm, password }) => {
   const newUser = {
     uuid: uuidV4(),
@@ -61,18 +81,35 @@ const createNewUserService = async ({ name, email, isAdm, password }) => {
   };
 
   users.push(newUser);
-  return [201, newUser];
+  const user = { ...newUser };
+  delete user.password;
+
+  return [201, user];
 };
 
 const loginService = async ({ email, password }) => {
   const validUser = users.find((user) => user.email === email);
+
   if (!validUser) {
-    return [401, { error: "401 UNAUTHORIZED" }];
+    return [
+      401,
+      {
+        message: "Wrong email/password",
+      },
+    ];
   }
+
   const passwordMatch = await compare(password, validUser.password);
+
   if (!passwordMatch) {
-    return [401, { error: "401 UNAUTHORIZED" }];
+    return [
+      401,
+      {
+        message: "Wrong email/password",
+      },
+    ];
   }
+
   const token = jwt.sign(
     {
       isAdm: validUser.isAdm,
@@ -99,6 +136,57 @@ const getUserProfileService = (uuid) => {
   const { password, ...user } = userProfile;
   return [200, user];
 };
+
+const removeUserService = (idUserSession, idRemoveUser, isAdm) => {
+  const userExist = users.findIndex((el) => el.uuid === idRemoveUser);
+  if (userExist == -1) {
+    return [
+      404,
+      {
+        message: "user not found",
+      },
+    ];
+  }
+
+  if (!isAdm && idUserSession !== idRemoveUser) {
+    return [
+      403,
+      {
+        message: "missing admin permissions",
+      },
+    ];
+  }
+
+  users.splice(userExist, 1);
+  return [204, ""];
+};
+
+const updatedDataUserService = (uuid, dataUpdate) => {
+  const indexUserEdit = users.findIndex((el) => el.uuid === uuid);
+  if (indexUserEdit === -1) {
+    return [401, { message: "Missing authorization headers" }];
+  }
+
+  const editUser = {
+    updatedOn: new Date(),
+    name: dataUpdate.name ? dataUpdate.name : users[indexUserEdit].name,
+    email: dataUpdate.email ? dataUpdate.email : users[indexUserEdit].email,
+    password: dataUpdate.password
+      ? hash(dataUpdate.password, 10)
+      : users[indexUserEdit].password,
+  };
+
+  users[indexUserEdit] = {
+    ...users[indexUserEdit],
+    ...editUser,
+  };
+
+  const user = { ...users[indexUserEdit] };
+  delete user.password;
+
+  return [200, user];
+};
+
 //   controll
 
 const createNewUserController = async (request, response) => {
@@ -120,8 +208,30 @@ const getUsersAllController = (request, response) => {
 const getUserProfileController = (request, response) => {
   const { uuid } = request.user;
   const [status, data] = getUserProfileService(uuid);
+
   return response.status(status).json(data);
 };
+
+const removeUserController = (request, response) => {
+  const idUserSession = request.user.uuid;
+  const idRemoveUser = request.params.uuid;
+  const isAdm = request.user.isAdm;
+  const [status, data] = removeUserService(idUserSession, idRemoveUser, isAdm);
+
+  return response.status(status).json(data);
+};
+
+const updatedDataUserController = (request, response) => {
+  const { uuid } = request.params;
+
+  const dataUpdate = request.body;
+
+  const [status, data] = updatedDataUserService(uuid, dataUpdate);
+
+  return response.status(status).json(data);
+};
+
+// Routes
 app.post("/users", verifyUserMiddleware, createNewUserController);
 app.post("/login", loginController);
 app.get(
@@ -131,20 +241,14 @@ app.get(
   getUsersAllController
 );
 app.get("/users/profile", verifyTokenLoginMiddleware, getUserProfileController);
-app.patch("/users/<uuid>", verifyTokenLoginMiddleware);
+app.delete("/users/:uuid", verifyTokenLoginMiddleware, removeUserController);
+app.patch(
+  "/users/:uuid",
+  verifyTokenLoginMiddleware,
+  verifyIsAdmOrUserMiddleware,
+  updatedDataUserController
+);
+
 const PORT = 3000;
 app.listen(PORT, () => console.log(`App rodando em http://localhost:${PORT}`));
 export default app;
-
-// Método	Endpoint	Responsabilidade
-// POST	/users	Criação de usuários
-// POST	/login	Gera um token JWT recebendo email e password no corpo da requisição como JSON.
-// GET	/users	Lista todos os usuários
-// GET	/users/profile	Retorna os dados do usuário logado (usuário a qual pertence o token que será necessário neste endpoint)
-// PATCH	/users/<uuid>	Atualiza os dados de um usuário
-// DELETE	/users/<uuid>	Deleta usuários do banco
-
-// instalados novos
-// yarn add bcryptjs@2.4.3
-
-// yarn add jsonwebtoken@8.5.1
