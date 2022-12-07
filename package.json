@@ -6,7 +6,7 @@
   "license": "MIT",
   "scripts": {
     "test": "cross-env SECRET_KEY=secret_key jest --forceExit",
-    "dev": "nodemon src/app.js"
+    "dev": "nodemon src/server.js"
   },
   "dependencies": {
     "bcryptjs": "2.4.3",
